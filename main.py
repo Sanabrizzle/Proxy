@@ -1,58 +1,51 @@
 from flask import Flask, jsonify, request
-import json
-import os
-from datetime import datetime, timedelta
 import requests
+from datetime import datetime, timedelta
+from pymongo import MongoClient
 
 app = Flask(__name__)
 
-# File to store claimed IPs
-DATA_FILE = "claimed.json"
+# MongoDB connection
+MONGO_URI = "mongodb+srv://Key-gen:12251978@keycluster.lxnqhrb.mongodb.net/?retryWrites=true&w=majority&appName=KeyCluster"
+client = MongoClient(MONGO_URI)
+db = client["KeyDatabase"]
+collection = db["claimed_ips"]
 
-# Your generator site URL
+# Generator server URL
 GENERATOR_URL = "https://key-generator-1d.onrender.com/getKey"
-
-# Make sure data file exists
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump({}, f, indent=4)
-
-def load_data():
-    with open(DATA_FILE, "r") as f:
-        return json.load(f)
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
 
 @app.route("/")
 def get_key():
-    data = load_data()
-    # Get real IP from Render (proxy aware)
-    user_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
-    if not user_ip:
-        user_ip = "unknown"
-
-    # Check if already claimed
-    last_claim_str = data.get(user_ip)
-    if last_claim_str:
-        last_claim = datetime.fromisoformat(last_claim_str)
-        if datetime.utcnow() - last_claim < timedelta(days=1):
-            return jsonify({"error": "You’ve already claimed a key today"}), 403
-
-    # Fetch key from generator server
     try:
+        user_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+        if not user_ip:
+            user_ip = "unknown"
+
+        # Check if IP already claimed within 24 hours
+        record = collection.find_one({"ip": user_ip})
+        if record:
+            last_claim = record["timestamp"]
+            if datetime.utcnow() - last_claim < timedelta(days=1):
+                return jsonify({"error": "You’ve already claimed a key today"}), 403
+
+        # Fetch key from generator server
         response = requests.get(GENERATOR_URL)
         response.raise_for_status()
         key = response.json().get("key")
+        if not key:
+            return jsonify({"error": "Failed to get key from generator"}), 500
+
+        # Save claim to MongoDB
+        collection.update_one(
+            {"ip": user_ip},
+            {"$set": {"timestamp": datetime.utcnow(), "key": key}},
+            upsert=True
+        )
+
+        return jsonify({"key": key})
+
     except Exception as e:
-        return jsonify({"error": "Failed to fetch key"}), 500
-
-    # Record claim
-    data[user_ip] = datetime.utcnow().isoformat()
-    save_data(data)
-
-    return jsonify({"key": key})
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)  # Use Render's expected port
+    app.run(host="0.0.0.0", port=3000)
