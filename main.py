@@ -9,9 +9,10 @@ app = Flask(__name__)
 # File to store claimed IPs
 DATA_FILE = "claimed.json"
 
+# Your generator site URL
 GENERATOR_URL = "https://key-generator-1d.onrender.com/getKey"
 
-# Ensure data file exists
+# Make sure data file exists
 if not os.path.exists(DATA_FILE):
     with open(DATA_FILE, "w") as f:
         json.dump({}, f, indent=4)
@@ -27,10 +28,12 @@ def save_data(data):
 @app.route("/")
 def get_key():
     data = load_data()
+    # Get real IP from Render (proxy aware)
     user_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
     if not user_ip:
         user_ip = "unknown"
 
+    # Check if already claimed
     last_claim_str = data.get(user_ip)
     if last_claim_str:
         last_claim = datetime.fromisoformat(last_claim_str)
@@ -50,3 +53,6 @@ def get_key():
     save_data(data)
 
     return jsonify({"key": key})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)  # Use Render's expected port
